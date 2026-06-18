@@ -1,16 +1,22 @@
 DROP TABLE tblDataHarvester_Config
 
-CREATE TABLE tblDataHarvester_Config (
-    DHC_RecordID INT IDENTITY PRIMARY KEY,
-    DHC_Name NVARCHAR(64),
-    DHC_Symbol NVARCHAR(64),
-    DHC_Exchange NVARCHAR(64),
-    DHC_Interval NVARCHAR(16),
-    DHC_isActive BIT,
-    DHC_LastSuccess DATETIME,
-    DHC_RetryMax INT DEFAULT 3,
-    DHC_CreatedAt DATETIME DEFAULT GETDATE()
-);
+CREATE TABLE Supra.dbo.tblDataHarvester_Config (
+	DHC_RecordID int IDENTITY(1,1) NOT NULL,
+	DHC_Name nvarchar(128) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+	DHC_Symbol nvarchar(64) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+	DHC_Exchange nvarchar(64) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+	DHC_Interval nvarchar(16) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,
+	DHC_isActive bit DEFAULT 1 NULL,
+	DHC_LastSuccess datetime NULL,
+	DHC_RetryMax int DEFAULT 3 NULL,
+	DHC_CreatedAt datetime DEFAULT getdate() NULL,
+	DHC_Currency nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	DHC_Unit nvarchar(100) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	DHC_Note nvarchar(256) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	DHC_Source varchar(32) COLLATE SQL_Latin1_General_CP1_CI_AS NULL,
+	CONSTRAINT PK__DataHarv__C9D4C782744D6C31 PRIMARY KEY (DHC_RecordID),
+	CONSTRAINT UQ_DHC_Symbol_Exchange_Interval UNIQUE (DHC_Symbol,DHC_Exchange,DHC_Interval)
+)
 
 INSERT INTO Supra.dbo.tblDataHarvester_Config (DHC_Symbol,DHC_Exchange,DHC_Interval,DHC_isActive,DHC_RetryMax)
 	VALUES ('USDTHB','OANDA','Day',1,3)
@@ -21,24 +27,21 @@ INSERT INTO Supra.dbo.tblDataHarvester_Config (DHC_Symbol,DHC_Exchange,DHC_Inter
 
 DROP TABLE tblDataHarvester
 
-CREATE TABLE tblDataHarvester (
-    DH_RecordID UNIQUEIDENTIFIER DEFAULT NEWSEQUENTIALID() PRIMARY KEY,
-    DH_DHC_RecordID INT,
-    DH_TimeStamp DATETIME,
-    DH_Open FLOAT,
-    DH_High FLOAT,
-    DH_Low FLOAT,
-    DH_Close FLOAT,
-    DH_Volume FLOAT,
-    DH_CloseChange FLOAT,        -- Close minus previous bar's Close
-    DH_CloseChangePct FLOAT,     -- CloseChange as a percentage of previous bar's Close
-    DH_CreatedAt DATETIME DEFAULT GETDATE(),
-    CONSTRAINT uq_dhcrec_time UNIQUE(DH_DHC_RecordID, DH_TimeStamp)
-);
-
--- To add columns to an existing table (instead of DROP/CREATE):
--- ALTER TABLE tblDataHarvester ADD DH_CloseChange FLOAT;
--- ALTER TABLE tblDataHarvester ADD DH_CloseChangePct FLOAT;
+CREATE TABLE Supra.dbo.tblDataHarvester (
+	DH_RecordID uniqueidentifier DEFAULT newsequentialid() NOT NULL,
+	DH_DHC_RecordID int NULL,
+	DH_TimeStamp datetime NULL,
+	DH_Open float NULL,
+	DH_High float NULL,
+	DH_Low float NULL,
+	DH_Close float NULL,
+	DH_Volume float NULL,
+	DH_CloseChange float NULL,
+	DH_CloseChangePct float NULL,
+	DH_CreatedAt datetime DEFAULT getdate() NULL,
+	CONSTRAINT PK__tblDataH__3B247A2350E2AE34 PRIMARY KEY (DH_RecordID),
+	CONSTRAINT uq_dhcid_time UNIQUE (DH_DHC_RecordID,DH_TimeStamp)
+)
 
 DROP TABLE tblDataHarvester_Log
 
@@ -51,9 +54,30 @@ CREATE TABLE tblDataHarvester_Log (
 );
 
 CREATE VIEW dbo.viwDataHarvester AS
-SELECT DHC_RecordID [ID],DHC_Name [Name],DHC_Symbol [Symbol],DHC_Exchange [Exchange],DHC_Interval [Interval]
-,DH_TimeStamp [DateTime],CAST(DH_TimeStamp AS DATE) [Date], CONVERT(DATE,LEFT(CAST(DH_TimeStamp AS DATE),7)+'-01') [YM1]
-,DH_Open [Open],DH_High [High],DH_Low [Low],DH_Close [Close],DH_Volume [Volume]
-,DH_CloseChange [CloseChange],DH_CloseChangePct [CloseChangePct]
+SELECT 
+	x.DHC_RecordID [ID]
+	,x.DHC_Name [Name]
+	,x.DHC_Symbol [Symbol]
+	,x.DHC_Exchange [Exchange]
+	,x.DHC_Interval [Interval]
+	,y.DH_TimeStamp [DateTime]
+	,CAST(y.DH_TimeStamp AS DATE) [Date]
+	,CONVERT(DATE,LEFT(CAST(y.DH_TimeStamp AS DATE),7)+'-01') [YM1]
+	,y.DH_Open [Open]
+	,y.DH_High [High]
+	,y.DH_Low [Low]
+	,y.DH_Close [Close]
+	,y.DH_CloseChange [CloseChange]
+	,y.DH_CloseChangePct [CloseChangePct]
+	,y.DH_Volume [Volume]
+	,x.DHC_Currency [Currency]
+	,x.DHC_Unit [Unit]
+	,z.DH_Close [1USD_THB]
+	,y.DH_Open*z.DH_Close [Open_THB]
+	,y.DH_High*z.DH_Close [High_THB]
+	,y.DH_Low*z.DH_Close [Low_THB]
+	,y.DH_Close*z.DH_Close [Close_THB]
+	,y.DH_CloseChange*z.DH_Close [CloseChange_THB]
 FROM Supra.dbo.tblDataHarvester_Config x
 LEFT JOIN Supra.dbo.tblDataHarvester y ON y.DH_DHC_RecordID = x.DHC_RecordID
+LEFT JOIN Supra.dbo.tblDataHarvester z ON z.DH_DHC_RecordID = 1 AND CAST(z.DH_TimeStamp AS DATE) = CAST(y.DH_TimeStamp AS DATE) AND y.DH_DHC_RecordID NOT IN (1,2)
