@@ -3,13 +3,20 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.db import db_connection
-from app.fetcher_tv import fetch_data
+from app.fetcher_tv import fetch_data as fetch_data_tv
+from app.fetcher_te import fetch_data as fetch_data_te
 from app.loader import batch_insert
 from app.logger import log
 from app.config import MAX_WORKERS, RETRY_BASE_DELAY
 from app.updater import run_updater
 
 _log = logging.getLogger("DataHarvester")
+
+FETCHERS = {
+    "TV": fetch_data_tv,
+    "TE": fetch_data_te,
+}
+DEFAULT_SOURCE = "TV"
 
 
 def get_configs():
@@ -23,9 +30,10 @@ def get_configs():
                 DHC_Exchange,
                 DHC_Interval,
                 DHC_LastSuccess,
-                DHC_RetryMax
+                DHC_RetryMax,
+                DHC_Source
             FROM tblDataHarvester_Config
-            WHERE DHC_isActive = 1
+            WHERE DHC_isActive = 1 AND DHC_Source = 'TE'
             """
         )
         return cursor.fetchall()
@@ -42,7 +50,12 @@ def update_last_success(dhc_id):
 
 
 def process_symbol(cfg):
-    dhc_id, symbol, exchange, interval, last_success, retry_max = cfg
+    dhc_id, symbol, exchange, interval, last_success, retry_max, source = cfg
+
+    fetch_data = FETCHERS.get(source or DEFAULT_SOURCE)
+    if fetch_data is None:
+        log(dhc_id, "FAILED", f"Unknown DHC_Source '{source}' — no fetcher registered")
+        return
 
     for attempt in range(1, retry_max + 1):
         try:
