@@ -24,7 +24,7 @@ def get_configs():
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT
+            SELECT TOP 30
                 DHC_RecordID,
                 DHC_Symbol,
                 DHC_Exchange,

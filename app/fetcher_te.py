@@ -2,23 +2,18 @@ import re
 import time
 import logging
 from datetime import datetime
+from app.config import FETCH_LIMIT
 
 from playwright.sync_api import sync_playwright
 
 _log = logging.getLogger("DataHarvester")
 
-# TE chart "recent window" lookback for non-initial refreshes.
-RECENT_POINTS = 10
-
 INTERVAL_SELECTOR = {
     "Day": "1d",
     "Week": "1w",
 }
-DEFAULT_INTERVAL_ATTR = "1d"
+DEFAULT_INTERVAL_ATTR = "1w"
 
-
-# Build full TE URL from config: DHC_Exchange is the domain prefix,
-# DHC_Symbol is the path slug, e.g.
 #   exchange = "https://tradingeconomics.com/"
 #   symbol   = "commodity/crude-oil"
 def _build_url(symbol, exchange):
@@ -26,7 +21,6 @@ def _build_url(symbol, exchange):
 
 
 def _clean_float(text):
-    """Strip +, %, (), spaces, commas before float conversion."""
     if text is None:
         return None
     cleaned = re.sub(r"[+%(),\s]", "", text)
@@ -37,28 +31,11 @@ def _clean_float(text):
 
 
 def _parse_date(text):
-    """
-    TE renders .yLabelDrag as e.g. 'Jun 12 2026' for daily/weekly charts.
-    Raise if the format ever changes so we notice instead of silently
-    inserting wrong timestamps.
-    """
     return datetime.strptime(text.strip(), "%b %d %Y")
 
 
 def fetch_data(dhc_id, symbol, exchange, interval, last_success, retry_max):
-    """
-    Returns a list of 8-tuples:
-        (datetime, open, high, low, close, volume, close_change, close_change_pct)
-
-    TE has no volume data on these commodity charts -> volume = None.
-    close_change / close_change_pct come straight from TE's own tooltip
-    (nChange / percChange) rather than being derived locally.
-
-    NOTE: this is a different shape than fetcher_tv.fetch_data's 6-tuples
-    (no change/pct columns there, since TV doesn't expose them and
-    app/updater.py computes those for TV rows after the fact). app/loader.py
-    handles both shapes.
-    """
+    
     url = _build_url(symbol, exchange)
     interval_attr = INTERVAL_SELECTOR.get(interval, DEFAULT_INTERVAL_ATTR)
 
@@ -86,55 +63,50 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
     records = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=20)
+        browser = p.chromium.launch(
+          headless=False, 
+          slow_mo=20,
+          args=["--window-size=1,1", "--window-position=-1000,-1000"]
+        )
         try:
-            page = browser.new_page(viewport={"width": 1200, "height": 500})
+            page = browser.new_page(viewport={"width": 1000, "height": 500})
             page.goto(url)
-            page.wait_for_timeout(3000)
 
-            # Select interval (Day/Week) BEFORE switching to OHLC view.
+            page.wait_for_selector("#fullscreenBtn")
+            page.locator("#fullscreenBtn").click()
+
+            page.wait_for_selector("#iChart-bodyLabels-cntx", timeout=30000)
+
             page.evaluate(
                 """
                 (intervalAttr) => {
+                    document.querySelector("a[data-type='ohlc']").click()
                     const el = document.querySelector(`a[data-interval='${intervalAttr}']`);
                     if (el) el.click();
                 }
                 """,
                 interval_attr,
             )
-            page.wait_for_timeout(3000)
-
-            page.evaluate("""
-                () => {
-                    document.querySelector("a[data-type='ohlc']").click()
-                    document.querySelector("#fullscreenBtn").click();
-                }
-            """)
-
-            page.wait_for_timeout(3000)
+            
+            page.wait_for_selector("g.highcharts-series-0 > path")
 
             page.evaluate("""
             () => {
-                const chart = document.querySelector('.iChart-chart');
                 const cntx = document.querySelector('#iChart-bodyLabels-cntx');
+                const chart = document.querySelector('.iChart-chart');
                 document.head.innerHTML = '';
                 document.body.innerHTML = '';
-                document.body.appendChild(chart);
                 document.body.appendChild(cntx);
+                document.body.appendChild(chart);
             }
             """)
-
-            page.wait_for_timeout(1000)
-
             paths = page.locator("g.highcharts-series-0 > path")
             total = paths.count()
 
             if last_success is None:
-                # Initial fetch: take everything except the first point,
-                # which is often a partial/cut-off candle at the chart edge.
-                start = 1
+                start = 0
             else:
-                start = max(0, total - RECENT_POINTS)
+                start = max(0, total - FETCH_LIMIT)
 
             for i in range(start, total):
                 path = paths.nth(i)
@@ -154,21 +126,32 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
                     h = _clean_float(page.locator(".highLabel").inner_text())
                     l = _clean_float(page.locator(".lowLabel").inner_text())
                     c = _clean_float(page.locator(".closeLabel").inner_text())
-                    chg = _clean_float(page.locator(".nChange").inner_text())
-                    chg_pct = _clean_float(page.locator(".percChange").inner_text())
 
                     if None in (o, h, l, c):
                         _log.warning(f"[{dhc_id}] Skipping unparseable row at index {i}: "
                                      f"o={o} h={h} l={l} c={c} raw_date={raw_date!r}")
                         continue
 
-                    # chg / chg_pct may legitimately be None if TE doesn't render
-                    # them for the very first visible point on the chart.
-                    records.append((dt, o, h, l, c, None, chg, chg_pct))
-
                 except Exception as e:
                     _log.warning(f"[{dhc_id}] Skipping point {i}: {e}")
                     continue
+                
+                # chg, chg_pct = None, None
+                # try:
+                #     chg = _clean_float(page.locator(".nChange").inner_text(timeout=0))
+                #     chg_pct = _clean_float(page.locator(".percChange").inner_text(timeout=0))
+                # except Exception:
+                #     pass  # fall through to the calculated fallback below
+                
+                # if (chg is None or chg_pct is None) and records:
+                #     prev_close = records[-1][4]  # close is index 4 in our tuple
+                #     if prev_close:
+                #         if chg is None:
+                #             chg = round(c - prev_close, 6)
+                #         if chg_pct is None:
+                #             chg_pct = round((c - prev_close) / prev_close * 100, 6)
+
+                records.append((dt, o, h, l, c, None))
         finally:
             browser.close()
 
