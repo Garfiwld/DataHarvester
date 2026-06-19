@@ -2,7 +2,7 @@ import re
 import time
 import logging
 from datetime import datetime
-from app.config import FETCH_LIMIT
+from app.config import FETCH_LIMIT, RETRY_BASE_DELAY
 
 from playwright.sync_api import sync_playwright
 
@@ -51,7 +51,7 @@ def fetch_data(dhc_id, symbol, exchange, interval, last_success, retry_max):
             _log.info(f"[{dhc_id}] Fetched {len(records)} bars for {symbol}")
             return records
 
-        wait = 2.0 ** attempt
+        wait = RETRY_BASE_DELAY ** attempt
         _log.warning(f"[{dhc_id}] Empty result, retrying in {wait:.1f}s...")
         time.sleep(wait)
 
@@ -89,6 +89,8 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
             )
             
             page.wait_for_selector("g.highcharts-series-0 > path")
+            paths = page.locator("g.highcharts-series-0 > path")
+            total = paths.count()
 
             page.evaluate("""
             () => {
@@ -100,8 +102,6 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
                 document.body.appendChild(chart);
             }
             """)
-            paths = page.locator("g.highcharts-series-0 > path")
-            total = paths.count()
 
             if last_success is None:
                 start = 0

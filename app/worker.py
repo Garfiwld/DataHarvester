@@ -24,7 +24,7 @@ def get_configs():
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT TOP 30
+            SELECT
                 DHC_RecordID,
                 DHC_Symbol,
                 DHC_Exchange,
@@ -33,7 +33,7 @@ def get_configs():
                 DHC_RetryMax,
                 DHC_Source
             FROM tblDataHarvester_Config
-            WHERE DHC_isActive = 1 AND DHC_Source = 'TE'
+            WHERE DHC_isActive = 1
             """
         )
         return cursor.fetchall()
