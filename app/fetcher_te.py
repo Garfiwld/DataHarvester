@@ -34,6 +34,21 @@ def _parse_date(text):
     return datetime.strptime(text.strip(), "%b %d %Y")
 
 
+_TOOLTIP_NUM = r"[+-]?\d[\d,]*(?:\.\d+)?"
+_OHLC_TOOLTIP_RE = re.compile(
+    rf"Open:\s*({_TOOLTIP_NUM}).*?High:\s*({_TOOLTIP_NUM}).*?Low:\s*({_TOOLTIP_NUM}).*?Close:\s*({_TOOLTIP_NUM})",
+    re.DOTALL,
+)
+
+
+def _parse_ohlc_tooltip(text):
+    """Parse the '#chg-tooltip' hover box, e.g. 'Open: 75.170\\nHigh: 76.700\\n...'."""
+    match = _OHLC_TOOLTIP_RE.search(text or "")
+    if not match:
+        return None, None, None, None
+    return tuple(_clean_float(v) for v in match.groups())
+
+
 def fetch_data(dhc_id, symbol, exchange, interval, last_success, retry_max):
     
     url = _build_url(symbol, exchange)
@@ -92,17 +107,6 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
             paths = page.locator("g.highcharts-series-0 > path")
             total = paths.count()
 
-            page.evaluate("""
-            () => {
-                const cntx = document.querySelector('#iChart-bodyLabels-cntx');
-                const chart = document.querySelector('.iChart-chart');
-                document.head.innerHTML = '';
-                document.body.innerHTML = '';
-                document.body.appendChild(cntx);
-                document.body.appendChild(chart);
-            }
-            """)
-
             if last_success is None:
                 start = 0
             else:
@@ -122,14 +126,12 @@ def _scrape_once(dhc_id, url, interval_attr, last_success):
                     raw_date = page.locator(".yLabelDrag").inner_text().strip()
                     dt = _parse_date(raw_date)
 
-                    o = _clean_float(page.locator(".openLabel").inner_text())
-                    h = _clean_float(page.locator(".highLabel").inner_text())
-                    l = _clean_float(page.locator(".lowLabel").inner_text())
-                    c = _clean_float(page.locator(".closeLabel").inner_text())
+                    tooltip_text = page.locator("#chg-tooltip").inner_text()
+                    o, h, l, c = _parse_ohlc_tooltip(tooltip_text)
 
                     if None in (o, h, l, c):
                         _log.warning(f"[{dhc_id}] Skipping unparseable row at index {i}: "
-                                     f"o={o} h={h} l={l} c={c} raw_date={raw_date!r}")
+                                     f"o={o} h={h} l={l} c={c} raw_date={raw_date!r} tooltip={tooltip_text!r}")
                         continue
 
                 except Exception as e:
